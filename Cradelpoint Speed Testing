@@ -1,76 +1,106 @@
-#This uses 2 BASH scripts that use CURL to invoke the speed tests (upload and download are ran indepentantly and can't be ran at the same time)
-sh <PATH TO SHELL SCRIPT Upload>
-start-sleep -seconds 900
-sh <PATH TO SHELL SCRIPT Download>
-#########################################
-start-sleep -seconds 2300
+#Author: Michael Shirazi
+#Date: 8/12/2023
+
+$AccountID = <ID>
 
 $header = @{
-        'X-CP-API-ID' = '<>';
-        'X-CP-API-KEY' = '<>';
-        'X-ECM-API-ID' ='<>';
-        'X-ECM-API-KEY' = '<>';
+    'X-CP-API-ID' = '';
+    'X-CP-API-KEY' = '';
+    'X-ECM-API-ID' ='';
+    'X-ECM-API-KEY' = '';
 }
 
-#Each shell script writes a unique ID number to a file which we then use to retrieve the results
-$download = Get-Content '<FilePath>' | ConvertFrom-Json
-$DownURL = 'https://www.cradlepointecm.com/api/v2/speed_test/' + $download.id + "/"
-$DownResults = Invoke-RestMethod -Uri $DownURL -Headers $header -ContentType application/json 
+$CradlepointIDs = Invoke-RestMethod -uri "https://www.cradlepointecm.com/api/v2/net_devices/?account=$AccountID&limit=500" -headers $header -method get
+$AllIds = $CradlepointIDs.data
+$EndpointURL = $CradlepointIDs.meta.next
 
-start-sleep -seconds 2
+while ($EndpointURL) {
+   $CradlepointIDs = Invoke-RestMethod -uri $EndpointURL -headers $header -method get
+    $EndpointURL = $CradlepointIDs.meta.next
+    $AllIds = $AllIds + $CradlepointIDs.data
+}
 
-$upload = Get-Content '<FilePath>' | ConvertFrom-Json
-$upURL = 'https://www.cradlepointecm.com/api/v2/speed_test/' + $upload.id + "/"
-$UpResults = Invoke-RestMethod -Uri $upURL -Headers $header -ContentType application/json 
+#This next line is a file that contains the list of sites in the 'Cradlepoint speed testing' sheet. This is used to organize the output
+$AllSites = import-csv 'c:\Users\michaelshirazi\Documents\PowerShell Scripts\CradlePoint Speed Testing\locationlist.csv'
 
-start-sleep -seconds 2
+$SpeedtestIDs = @()
+foreach($location in $AllSites){
+    foreach($id in $AllIds){
+        if ($id.hostname -eq $location.location -and $id.summary -eq "connected") {
+            $SpeedtestIDs += [int]$id.id
+            $location.rid = $id.id
+        }
+    }
+}
 
-### PULLING SPECIFIC INFO OUT OF THE RESULTS########    
-$locationList = import-csv "<CSV>" 
-$arraySplitter = 0
-$filename = Get-DAte -Format "MM-dd"
-foreach($d in $DownResults.results){
-    foreach($t in $UpResults.results){
+$uniqueIDs = $SpeedtestIDs | select -Unique 
+
+#Upload Speed Test JSON body
+$jsonarray = @{
+    account= "https://www.cradlepointecm.com/api/v2/accounts/$AccountID/"
+    config= @{
+        host= "<NetPerf Server>"
+        max_test_concurrency= 50
+        net_device_ids= @($uniqueIDs)
+        port= 12865
+        size= $null
+        test_timeout= 5
+        test_type= "TCP Upload"
+        time= 1
+    }
+} | ConvertTo-Json
+
+#Initiates the upload speed test
+$UploadSpeedTest = Invoke-RestMethod -Uri "https://www.cradlepointecm.com/api/v2/speed_test/" -Method Post -Headers $header -ContentType 'application/json' -Body $jsonarray
+start-sleep -seconds 900
+
+#Retrieves the upload speed test results
+$UploadResults = Invoke-RestMethod -Uri $UploadSpeedTest.resource_uri -Method Get -Headers $header -ContentType 'application/json'
+
+
+#Download Speed Test JSON body
+$jsonarray = @{
+    account= "https://www.cradlepointecm.com/api/v2/accounts/$AccountID/"
+    config= @{
+        host= "<NetPerf Server"
+        max_test_concurrency= 50
+        net_device_ids= @($uniqueIDs)
+        port= 12865
+        size= $null
+        test_timeout= 5
+        test_type= "TCP Download" 
+        time= 1
+    }
+} | ConvertTo-Json
+
+#Initiates the speed test
+$DownloadSpeedTest = Invoke-RestMethod -Uri "https://www.cradlepointecm.com/api/v2/speed_test/" -Method Post -Headers $header -ContentType 'application/json' -Body $jsonarray
+start-sleep -seconds 2300
+
+#Retrieves speed test results
+$DownloadResults = Invoke-RestMethod -Uri $DownloadSpeedTest.resource_uri -Method Get -Headers $header -ContentType 'application/json'
+
+foreach($line in $AllSites){
+    foreach($d in $DownloadResults.results){
+    foreach($t in $UploadResults.results){
         
-        if($d.net_device_id -eq $t.net_device_id){
+        if($d.net_device_id -eq $t.net_device_id -and $d.net_device_id -eq $line.RID){
             if($d.state -eq "error" -and $t.state -eq "complete"){
-            [PSCustomObject]@{
-                #Location = $locationList.Hostname[$arraySplitter]
-                #Carrier = $locationList.carrier[$arraySplitter]
-                #RouterID = $d.net_device_id
-                Download = $d.results
-                Upload = $t.results.throughput
-             }  | export-csv "C:\<PATH>\$filename.csv" -append 
-             $arraySplitter += 1
+      
+                $line.download = $d.results
+                $line.upload = $t.results.throughput 
             } 
-             elseif($d.state -eq "error" -and $t.state -eq "error"){
-            [PSCustomObject]@{
-                #Location = $locationList.Hostname[$arraySplitter]
-                #Carrier = $locationList.carrier[$arraySplitter]
-                #RouterID = $d.net_device_id
-                Download = $d.results
-                Upload = $t.results
-             }  | export-csv "C:\<PATH>\$filename.csv" -append 
-             $arraySplitter += 1
+                elseif($d.state -eq "error" -and $t.state -eq "error"){
+                $line.download = $d.results
+                $line.upload = $t.results
             } 
-             elseif($d.state -eq "complete" -and $t.state -eq "error"){
-            [PSCustomObject]@{
-                #Location = $locationList.Hostname[$arraySplitter]
-                #Carrier = $locationList.carrier[$arraySplitter]
-                #RouterID = $d.net_device_id
-                Download = $d.results.throughput
-                Upload = $t.results
-             }  | export-csv "C:\<PATH>\$filename.csv" -append 
-             $arraySplitter += 1
+                elseif($d.state -eq "complete" -and $t.state -eq "error"){
+                $line.download = $d.results.throughput
+                $line.upload = $t.results
             }
-             elseif($d.state -eq "complete" -and $t.state -eq "complete"){
-            [PSCustomObject]@{
-                #Location = $locationList.Hostname[$arraySplitter]
-                #Carrier = $locationList.carrier[$arraySplitter]
-                #RouterID = $d.net_device_id
-                Download = $d.results.throughput
-                Upload = $t.results.throughput
-             }  | export-csv "C:\<PATH>\$filename.csv" -append
-             $arraySplitter += 1
-             }
+                elseif($d.state -eq "complete" -and $t.state -eq "complete"){
+                $line.download = $d.results.throughput
+                $line.upload = $t.results.throughput
+                }
         }}}
+    }
