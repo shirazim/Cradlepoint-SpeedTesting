@@ -8,4 +8,4 @@ Update 5/22/23-
 I migrated away from this process and now use a speed testing SDK that was provided by cradlepoint. The SDK is a much better solution for running these speed tests.
 
 Update 8/12/2023-
-The Speed Test SDK broke after we upgraded our Cradlepoints to the latest NCOS. Was unable to find a fix for it so I re-wrote this script and am using the API to run speed tests again
+The Speed Test SDK broke after we upgraded our Cradlepoints to the latest NCOS. Was unable to find a fix for it so I re-wrote this script and am using the API to run speed tests again. This script no longer relies on 2 Bash scripts. This script is exactly how you should run speed tests via the API
